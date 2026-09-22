@@ -1,0 +1,6 @@
+.Rproj.user/
+*.Rhistory
+.quarto/
+.Rproj.user
+/docs
+ab-test-cookie-cats/ab-test-case-study.html

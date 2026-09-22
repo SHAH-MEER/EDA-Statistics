@@ -1,0 +1,40 @@
+---
+title: "Cookie Cats: Does Moving the Level Gate Change Player Retention?"
+subtitle: "Significance, power, frequentist vs. Bayesian, and the cost of peeking early"
+format:
+  html:
+    page-layout: full
+    code-fold: true
+    code-summary: "Show code"
+    toc: true
+    number-sections: true
+    embed-resources: true
+bibliography: references.bib
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+# install.packages(c("tidyverse", "pwr", "gt", "scales"))
+library(tidyverse)
+library(pwr)
+library(gt)
+library(scales)
+
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+)
+
+cookie_cats <- read_csv("data/cookie_cats.csv", show_col_types = FALSE)
+```
+
+## Introduction
+
+Cookie Cats is a mobile puzzle game in which players progress through numbered levels and periodically encounter a gate that pauses progress until a timer expires or the player pays to skip it. The gate was originally placed at level 30. In this experiment it was moved to level 40 for a randomly assigned half of players, while the remaining half kept the level 30 gate.
+
+This report evaluates the effect of that change on player retention and addresses five questions in sequence: whether retention actually changed, whether the experiment collected enough data to trust that result, how a frequentist and a Bayesian analysis of the same data compare, how much the false-positive rate would have inflated had the test been monitored and stopped early, and what the 7-day retention data confirms about the 1-day result.
