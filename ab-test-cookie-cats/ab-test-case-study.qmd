@@ -9,6 +9,9 @@ format:
     toc: true
     number-sections: true
     embed-resources: true
+    fig-width: 12
+    fig-height: 6
+    css: styles.css
 bibliography: references.bib
 ---
 
@@ -16,11 +19,12 @@ bibliography: references.bib
 #| label: setup
 #| include: false
 
-# install.packages(c("tidyverse", "pwr", "gt", "scales"))
+# install.packages(c("tidyverse", "pwr", "gt", "scales", "broom"))
 library(tidyverse)
 library(pwr)
 library(gt)
 library(scales)
+library(broom)
 
 color_gate30 <- "#2a78d6"
 color_gate40 <- "#eb6834"
@@ -32,11 +36,13 @@ color_primary_ink <- "#0b0b0b"
 color_surface <- "#fcfcfb"
 
 gate_colors <- c(gate_30 = color_gate30, gate_40 = color_gate40)
+gate_labels <- c(gate_30 = "Gate 30", gate_40 = "Gate 40")
 
-scale_fill_gate <- function(...) scale_fill_manual(values = gate_colors, ...)
-scale_color_gate <- function(...) scale_color_manual(values = gate_colors, ...)
+scale_fill_gate <- function(...) scale_fill_manual(values = gate_colors, labels = gate_labels, ...)
+scale_color_gate <- function(...) scale_color_manual(values = gate_colors, labels = gate_labels, ...)
+scale_x_gate <- function(...) scale_x_discrete(labels = gate_labels, ...)
 
-theme_cookie_cats <- function(base_size = 12) {
+theme_cookie_cats <- function(base_size = 14) {
   theme_minimal(base_size = base_size) +
     theme(
       plot.background = element_rect(fill = color_surface, color = NA),
@@ -59,6 +65,57 @@ theme_set(theme_cookie_cats())
 cookie_cats <- read_csv("data/cookie_cats.csv", show_col_types = FALSE)
 ```
 
+## Executive Summary {.unnumbered}
+
+Moving Cookie Cats' progression gate from level 30 to level 40 reduced player retention. The effect was directionally visible but not conclusive on Day 1 alone, comfortably powered and statistically significant on Day 7, and consistent across a frequentist and a Bayesian reading of the same data.
+
+```{r}
+#| label: fig-executive-summary
+#| fig-cap: "Estimated effect of Gate 30 vs Gate 40 (Gate 30 minus Gate 40), across every method used in this report"
+
+gate30_n <- sum(cookie_cats$version == "gate_30")
+gate40_n <- sum(cookie_cats$version == "gate_40")
+gate30_ret1 <- sum(cookie_cats$retention_1[cookie_cats$version == "gate_30"])
+gate40_ret1 <- sum(cookie_cats$retention_1[cookie_cats$version == "gate_40"])
+gate30_ret7 <- sum(cookie_cats$retention_7[cookie_cats$version == "gate_30"])
+gate40_ret7 <- sum(cookie_cats$retention_7[cookie_cats$version == "gate_40"])
+
+ret1_test_summary <- prop.test(x = c(gate30_ret1, gate40_ret1), n = c(gate30_n, gate40_n))
+ret7_test_summary <- prop.test(x = c(gate30_ret7, gate40_ret7), n = c(gate30_n, gate40_n))
+
+set.seed(42)
+n_draws <- 100000
+post30 <- rbeta(n_draws, 1 + gate30_ret1, 1 + (gate30_n - gate30_ret1))
+post40 <- rbeta(n_draws, 1 + gate40_ret1, 1 + (gate40_n - gate40_ret1))
+post_diff <- post30 - post40
+
+summary_estimates <- tibble(
+  method = c("Day-1 (frequentist)", "Day-1 (Bayesian)", "Day-7 (frequentist)"),
+  estimate = c(
+    unname(ret1_test_summary$estimate[1] - ret1_test_summary$estimate[2]),
+    mean(post_diff),
+    unname(ret7_test_summary$estimate[1] - ret7_test_summary$estimate[2])
+  ),
+  ci_low = c(ret1_test_summary$conf.int[1], quantile(post_diff, 0.025), ret7_test_summary$conf.int[1]),
+  ci_high = c(ret1_test_summary$conf.int[2], quantile(post_diff, 0.975), ret7_test_summary$conf.int[2])
+)
+
+summary_estimates |>
+  mutate(method = factor(method, levels = rev(method))) |>
+  ggplot(aes(x = estimate, y = method)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = color_muted) +
+  geom_pointrange(aes(xmin = ci_low, xmax = ci_high), color = color_sequential, linewidth = 0.8, size = 0.8) +
+  scale_x_continuous(labels = percent_format(accuracy = 0.1)) +
+  labs(
+    x = "Estimated retention difference (Gate 30 minus Gate 40)", y = NULL,
+    title = "Every method points the same direction: Gate 30 retains players better"
+  )
+```
+
+Every method used in this report, the Day-1 z-test, the Day-1 Bayesian posterior, and the Day-7 z-test, estimates a positive effect for Gate 30, and none of their intervals meaningfully favor Gate 40. The Day-7 result, the most statistically decisive of the three, corresponds to roughly `r scales::comma(round((gate30_ret7 / gate30_n - gate40_ret7 / gate40_n) * 100000))` more players per 100,000 installs still active a week after install under Gate 30 than under Gate 40.
+
+The recommendation is to keep the progression gate at level 30 rather than move it to level 40. Two caveats apply. First, this analysis measures retention only; it does not account for in-app purchase revenue or longer-term engagement, either of which could shift the trade-off if gate placement affects them differently. Second, the Day-1 result alone was underpowered for the effect size actually observed (section 4); it is the Day-7 result, not the Day-1 result, that makes this recommendation statistically decisive rather than merely suggestive.
+
 ## Introduction
 
 Cookie Cats is a mobile puzzle game developed by Tactile Entertainment in the connect-three genre, where players clear boards of coloured pieces to earn stars and progress through a long sequence of numbered levels. Like most games in this genre, its core loop pairs short, replayable levels with a slow drip of new content, and its business model depends on players returning day after day rather than on a single upfront purchase.
@@ -80,6 +137,7 @@ group_counts <- cookie_cats |>
   count(version, name = "players")
 
 group_counts |>
+  mutate(version = recode(version, !!!gate_labels)) |>
   gt() |>
   cols_label(version = "Group", players = "Players") |>
   fmt_number(columns = players, decimals = 0) |>
@@ -121,3 +179,392 @@ cookie_cats |>
 ```
 
 This long tail is expected for a free-to-play mobile game and is not a data quality issue. A single extreme outlier, one player with just under 50,000 recorded rounds, sits far beyond the rest of the distribution but is retained in the analysis, since the retention metrics used in the sections that follow depend only on whether a player returned, not on how many rounds they played.
+
+## Did It Work?
+
+The first and most direct question is whether moving the gate changed Day-1 retention. The rate for each group is computed with a 95% confidence interval using the normal approximation to the binomial, so the size of the gap can be judged against its uncertainty before any formal test is run.
+
+```{r}
+#| label: retention1-summary
+
+retention_summary <- function(data, retention_col) {
+  data |>
+    group_by(version) |>
+    summarise(
+      n = n(),
+      retained = sum(.data[[retention_col]]),
+      rate = retained / n,
+      se = sqrt(rate * (1 - rate) / n),
+      ci_low = rate - 1.96 * se,
+      ci_high = rate + 1.96 * se,
+      .groups = "drop"
+    )
+}
+
+ret1_summary <- retention_summary(cookie_cats, "retention_1")
+
+ret1_summary |>
+  mutate(version = recode(version, !!!gate_labels)) |>
+  gt() |>
+  cols_label(
+    version = "Group", n = "Players", retained = "Retained (Day 1)",
+    rate = "Retention rate", ci_low = "95% CI low", ci_high = "95% CI high"
+  ) |>
+  fmt_percent(columns = c(rate, ci_low, ci_high), decimals = 2) |>
+  fmt_number(columns = c(n, retained), decimals = 0) |>
+  tab_header(title = "Day-1 retention by group")
+```
+
+The chart below makes the size of the gap, and its uncertainty, visible at a glance before any test statistic is computed.
+
+```{r}
+#| label: fig-retention1-by-group
+#| fig-cap: "Day-1 retention rate by gate placement, with 95% confidence intervals"
+
+ret1_summary |>
+  ggplot(aes(x = version, y = rate, fill = version)) +
+  geom_col(width = 0.5) +
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0.15, color = color_primary_ink) +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+  scale_x_gate() +
+  scale_fill_gate() +
+  labs(
+    x = NULL, y = "Day-1 retention rate",
+    title = "Gate 30 retains slightly more players than Gate 40"
+  ) +
+  theme(legend.position = "none")
+```
+
+A two-proportion z-test formalises whether the gap seen in the chart is larger than would be expected from random noise alone.
+
+```{r}
+#| label: retention1-ztest
+
+ret1_test <- prop.test(
+  x = c(
+    sum(cookie_cats$retention_1[cookie_cats$version == "gate_30"]),
+    sum(cookie_cats$retention_1[cookie_cats$version == "gate_40"])
+  ),
+  n = c(
+    sum(cookie_cats$version == "gate_30"),
+    sum(cookie_cats$version == "gate_40")
+  )
+)
+
+tidy(ret1_test) |>
+  transmute(
+    `Gate 30 rate` = estimate1,
+    `Gate 40 rate` = estimate2,
+    Difference = estimate1 - estimate2,
+    `Test statistic (z²)` = statistic,
+    df = parameter,
+    `p-value` = p.value,
+    `95% CI low` = conf.low,
+    `95% CI high` = conf.high
+  ) |>
+  gt() |>
+  fmt_percent(columns = c(`Gate 30 rate`, `Gate 40 rate`, Difference, `95% CI low`, `95% CI high`), decimals = 2) |>
+  fmt_number(columns = `Test statistic (z²)`, decimals = 2) |>
+  fmt_number(columns = df, decimals = 0) |>
+  fmt_number(columns = `p-value`, decimals = 3) |>
+  tab_header(title = "Two-proportion z-test: Day-1 retention") |>
+  tab_source_note(source_note = "R's prop.test() reports the chi-square statistic for a 2x2 test, which is algebraically equivalent to the square of the two-proportion z-statistic.")
+```
+
+The p-value from this test is 0.076, which does not clear the conventional 0.05 threshold. Taken on its own, the Day-1 result is directionally consistent with gate_30 retaining players better, but is not conclusive by the standard significance convention. The next two sections examine whether that inconclusiveness is a matter of insufficient data or a genuine absence of a strong effect, and section 7 checks whether the 7-day data tells a clearer story.
+
+## Statistical Power
+
+A result that falls short of significance is only informative once it is clear whether the experiment had enough players to reliably detect an effect of this size in the first place. This section quantifies that using the standard 80% power, alpha 0.05 convention [@cohen1988], applied to the effect size actually observed between the two groups.
+
+```{r}
+#| label: power-analysis
+
+p1 <- ret1_summary$rate[ret1_summary$version == "gate_30"]
+p2 <- ret1_summary$rate[ret1_summary$version == "gate_40"]
+effect_h <- ES.h(p1, p2)
+
+actual_n_per_group <- mean(ret1_summary$n)
+
+achieved_power <- pwr.2p.test(h = effect_h, n = actual_n_per_group, sig.level = 0.05)
+required_n_for_80pct <- pwr.2p.test(h = effect_h, power = 0.8, sig.level = 0.05)
+
+tibble(
+  Scenario = c("Achieved (actual sample size)", "Required for 80% power"),
+  `Sample size per group` = c(achieved_power$n, required_n_for_80pct$n),
+  Power = c(achieved_power$power, required_n_for_80pct$power)
+) |>
+  gt() |>
+  fmt_number(columns = `Sample size per group`, decimals = 0) |>
+  fmt_percent(columns = Power, decimals = 1) |>
+  tab_header(title = "Power analysis for the observed effect") |>
+  tab_source_note(source_note = paste0("Effect size (Cohen's h): ", round(effect_h, 4), ", significance level: 0.05"))
+```
+
+The observed effect size (Cohen's h) between the two groups is small, about 0.012. At the actual sample size of roughly 45,000 players per group, the experiment had only a 43% chance of detecting an effect this small at the 0.05 significance level, well short of the 80% convention. Reaching 80% power for an effect this small would have required roughly 111,000 players per group, close to two and a half times what was actually collected. This is the direct explanation for the inconclusive Day-1 result in the previous section: the experiment was not underpowered because of a mistake, but because the true effect on Day-1 retention turns out to be smaller than the experiment was sized to detect reliably.
+
+```{r}
+#| label: fig-power-curve
+#| fig-cap: "Statistical power to detect the observed effect size as sample size grows"
+
+power_curve_data <- tibble(n = seq(500, required_n_for_80pct$n * 1.1, length.out = 200)) |>
+  mutate(power = map_dbl(n, \(n) pwr.2p.test(h = effect_h, n = n, sig.level = 0.05)$power))
+
+power_curve_data |>
+  ggplot(aes(x = n, y = power)) +
+  geom_line(color = color_sequential, linewidth = 0.8) +
+  geom_hline(yintercept = 0.8, linetype = "dashed", color = color_muted) +
+  geom_vline(xintercept = actual_n_per_group, linetype = "dotted", color = color_gate40) +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 1)) +
+  scale_x_continuous(labels = comma) +
+  labs(
+    x = "Sample size per group", y = "Statistical power",
+    title = "The experiment fell well short of the sample size needed for 80% power"
+  )
+```
+
+The dotted vertical line marks the actual sample size the experiment collected; the dashed horizontal line marks the 80% power convention. The experiment would have needed to run substantially longer, or recruit a larger share of new players, to reliably detect an effect of this size on Day-1 retention alone.
+
+## Frequentist vs Bayesian
+
+The Day-1 result leaves two ways to describe the same evidence. A frequentist reading, like the z-test above, asks how often data this extreme would arise if there were truly no difference between the groups, and reports a p-value against a fixed threshold, in this case one that falls just short of 0.05. A Bayesian reading instead asks directly: given the data observed, how likely is it that gate_30 truly retains players better than gate_40? These are different questions, and a team can reasonably disagree about which one is more useful to answer, but they can be answered from the same data without contradiction.
+
+A beta-binomial model with a flat, uninformative Beta(1,1) prior, meaning no assumption is made about the retention rate before seeing the data, gives a direct answer to the Bayesian question. Each group's posterior distribution over its true retention rate is sampled with `rbeta()`.
+
+```{r}
+#| label: bayesian-posteriors
+
+set.seed(42)
+n_draws <- 100000
+
+gate30_successes <- sum(cookie_cats$retention_1[cookie_cats$version == "gate_30"])
+gate30_n <- sum(cookie_cats$version == "gate_30")
+gate40_successes <- sum(cookie_cats$retention_1[cookie_cats$version == "gate_40"])
+gate40_n <- sum(cookie_cats$version == "gate_40")
+
+posterior_gate30 <- rbeta(n_draws, 1 + gate30_successes, 1 + (gate30_n - gate30_successes))
+posterior_gate40 <- rbeta(n_draws, 1 + gate40_successes, 1 + (gate40_n - gate40_successes))
+
+posterior_diff <- posterior_gate30 - posterior_gate40
+prob_gate30_better <- mean(posterior_diff > 0)
+
+tibble(
+  Quantity = c("P(Gate 30 > Gate 40)", "Mean difference (Gate 30 minus Gate 40)", "95% credible interval"),
+  Value = c(
+    percent(prob_gate30_better, accuracy = 0.1),
+    percent(mean(posterior_diff), accuracy = 0.01),
+    paste0(percent(quantile(posterior_diff, 0.025), accuracy = 0.01), " to ", percent(quantile(posterior_diff, 0.975), accuracy = 0.01))
+  )
+) |>
+  gt() |>
+  tab_header(title = "Posterior summary: Day-1 retention difference")
+```
+
+The chart below shows the full posterior distribution for each group's retention rate. The less these two distributions overlap, the more confident the data makes us that the groups genuinely differ.
+
+```{r}
+#| label: fig-posterior-densities
+#| fig-cap: "Posterior distributions of Day-1 retention rate for each group"
+
+tibble(
+  rate = c(posterior_gate30, posterior_gate40),
+  version = rep(c("gate_30", "gate_40"), each = n_draws)
+) |>
+  ggplot(aes(x = rate, fill = version)) +
+  geom_density(alpha = 0.5, color = NA) +
+  scale_x_continuous(labels = percent_format(accuracy = 0.1)) +
+  scale_fill_gate() +
+  labs(
+    x = "Day-1 retention rate", y = "Posterior density",
+    title = "The two groups' posterior retention rates mostly overlap, with Gate 30 shifted higher"
+  )
+```
+
+Under this model, there is a 96.2% probability that Gate 30's true Day-1 retention rate is higher than Gate 40's, with a mean estimated difference of about 0.6 percentage points. This is not a contradiction of the frequentist result: a p-value of 0.076 and a posterior probability of 96.2% are two framings of the same moderate, not-quite-conclusive evidence. The frequentist test asks whether the evidence clears an arbitrary fixed bar; the Bayesian model instead quantifies how confident the data alone makes us, which in this case is fairly confident, but not overwhelmingly so. Both readings agree on the same underlying fact: the data leans toward Gate 30, but not by a wide enough margin to rule out chance with high confidence from the Day-1 metric alone.
+
+## The Risk of Peeking
+
+A separate risk sits alongside the significance question: if the team had checked the p-value every day of the experiment and stopped the moment it crossed 0.05, the true chance of a false alarm is much higher than 5%, even when there is truly no difference between the groups. This is simulated directly. Many independent experiments are run under the null hypothesis, both groups given the same true retention rate drawn from the pooled data, checking significance daily, to see how often a false alarm would have been triggered by some day in the experiment.
+
+```{r}
+#| label: peeking-simulation
+
+set.seed(123)
+sim_runs <- 1000
+sim_days <- 45
+daily_n_per_group <- round(actual_n_per_group / sim_days)
+null_true_rate <- mean(cookie_cats$retention_1)
+
+simulate_one_run <- function(run_id) {
+  cum_a_success <- 0
+  cum_a_n <- 0
+  cum_b_success <- 0
+  cum_b_n <- 0
+  day_of_first_significance <- NA_integer_
+
+  for (day in seq_len(sim_days)) {
+    cum_a_n <- cum_a_n + daily_n_per_group
+    cum_b_n <- cum_b_n + daily_n_per_group
+    cum_a_success <- cum_a_success + rbinom(1, daily_n_per_group, null_true_rate)
+    cum_b_success <- cum_b_success + rbinom(1, daily_n_per_group, null_true_rate)
+
+    day_p_value <- prop.test(
+      x = c(cum_a_success, cum_b_success),
+      n = c(cum_a_n, cum_b_n)
+    )$p.value
+
+    if (is.na(day_of_first_significance) && day_p_value < 0.05) {
+      day_of_first_significance <- day
+    }
+  }
+
+  tibble(run_id = run_id, day_of_first_significance = day_of_first_significance)
+}
+
+peeking_results <- map_dfr(seq_len(sim_runs), simulate_one_run)
+peeking_false_positive_rate <- mean(!is.na(peeking_results$day_of_first_significance))
+
+tibble(
+  Monitoring = c("Single look at the end", "Checked every day, stopped at first significance"),
+  `False-positive rate` = c(0.05, peeking_false_positive_rate)
+) |>
+  gt() |>
+  fmt_percent(columns = `False-positive rate`, decimals = 1) |>
+  tab_header(title = "Effect of daily peeking on the false-positive rate") |>
+  tab_source_note(source_note = paste0(sim_runs, " simulated null-hypothesis experiments, ", sim_days, " days of daily accrual each"))
+```
+
+Checking once at a predetermined endpoint gives a false-positive rate matching the nominal 5%, as it should under the null hypothesis [@miller_peeking]. Checking every day and stopping at the first significant result instead pushes the false-positive rate to 27.8%, more than five times higher, using the exact same total amount of data. The chart below tracks, day by day, what fraction of the simulated null experiments have triggered at least one false alarm so far.
+
+```{r}
+#| label: fig-peeking-inflation
+#| fig-cap: "Peeking daily inflates the false-positive rate well beyond the nominal 5%"
+
+cumulative_false_positive <- tibble(day = seq_len(sim_days)) |>
+  mutate(
+    cumulative_rate = map_dbl(day, \(d) {
+      mean(!is.na(peeking_results$day_of_first_significance) &
+        peeking_results$day_of_first_significance <= d)
+    })
+  )
+
+cumulative_false_positive |>
+  ggplot(aes(x = day, y = cumulative_rate)) +
+  geom_line(color = color_sequential, linewidth = 0.8) +
+  geom_hline(yintercept = 0.05, linetype = "dashed", color = color_gate40) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    x = "Day of experiment", y = "Cumulative false-positive rate",
+    title = "The chance of a false alarm keeps climbing the longer the team keeps checking"
+  )
+```
+
+By the end of the simulated 45-day window, cumulative false alarms have climbed well past the dashed 5% reference line. This is the practical cost of monitoring a test daily and stopping as soon as the result looks good: it does not matter that no real effect exists in this simulation, since checking often enough will eventually produce a spurious "significant" result by chance alone. The Day-1 result in section 3 was checked once, at the end of the full dataset, so this specific risk does not apply to the number already reported, but it is a real risk for how the underlying experiment was likely monitored while it was running, and a reason to treat any test stopped early on a promising-looking p-value with real caution.
+
+## Day-7 Retention: A Confirmatory Check
+
+Day-1 retention was used as the primary metric throughout this report because it has the cleanest signal, not because of incomplete follow-up: the dataset has the same number of players per group at both horizons (44,700 and 45,489), so there is no censoring. What differs is the number of retained users each metric is estimated from. About 44% of players return on Day 1, versus about 18% on Day 7, so the Day-1 estimate is built on more retained users per group and carries a tighter confidence interval. This section checks whether the 7-day data, treated here as a secondary, confirmatory signal, agrees with the Day-1 result.
+
+```{r}
+#| label: retention7-summary
+
+ret7_summary <- retention_summary(cookie_cats, "retention_7")
+
+ret7_summary |>
+  mutate(version = recode(version, !!!gate_labels)) |>
+  gt() |>
+  cols_label(
+    version = "Group", n = "Players", retained = "Retained (Day 7)",
+    rate = "Retention rate", ci_low = "95% CI low", ci_high = "95% CI high"
+  ) |>
+  fmt_percent(columns = c(rate, ci_low, ci_high), decimals = 2) |>
+  fmt_number(columns = c(n, retained), decimals = 0) |>
+  tab_header(title = "Day-7 retention by group")
+```
+
+```{r}
+#| label: fig-retention7-by-group
+#| fig-cap: "Day-7 retention rate by gate placement, with 95% confidence intervals"
+
+ret7_summary |>
+  ggplot(aes(x = version, y = rate, fill = version)) +
+  geom_col(width = 0.5) +
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0.15, color = color_primary_ink) +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+  scale_x_gate() +
+  scale_fill_gate() +
+  labs(
+    x = NULL, y = "Day-7 retention rate",
+    title = "The Day-7 gap between groups is wider than the Day-1 gap"
+  ) +
+  theme(legend.position = "none")
+```
+
+```{r}
+#| label: retention7-ztest
+
+ret7_test <- prop.test(
+  x = c(
+    sum(cookie_cats$retention_7[cookie_cats$version == "gate_30"]),
+    sum(cookie_cats$retention_7[cookie_cats$version == "gate_40"])
+  ),
+  n = c(
+    sum(cookie_cats$version == "gate_30"),
+    sum(cookie_cats$version == "gate_40")
+  )
+)
+
+tidy(ret7_test) |>
+  transmute(
+    `Gate 30 rate` = estimate1,
+    `Gate 40 rate` = estimate2,
+    Difference = estimate1 - estimate2,
+    `Test statistic (z²)` = statistic,
+    df = parameter,
+    `p-value` = p.value,
+    `95% CI low` = conf.low,
+    `95% CI high` = conf.high
+  ) |>
+  gt() |>
+  fmt_percent(columns = c(`Gate 30 rate`, `Gate 40 rate`, Difference, `95% CI low`, `95% CI high`), decimals = 2) |>
+  fmt_number(columns = `Test statistic (z²)`, decimals = 2) |>
+  fmt_number(columns = df, decimals = 0) |>
+  fmt_number(columns = `p-value`, decimals = 4) |>
+  tab_header(title = "Two-proportion z-test: Day-7 retention") |>
+  tab_source_note(source_note = "R's prop.test() reports the chi-square statistic for a 2x2 test, which is algebraically equivalent to the square of the two-proportion z-statistic.")
+```
+
+Day-7 retention is 19.02% for Gate 30 versus 18.20% for Gate 40, a gap of about 0.8 percentage points, roughly 30% larger than the Day-1 gap. The z-test returns p = 0.0016, comfortably clearing the 0.05 threshold, and the 95% confidence interval for the difference (0.31 to 1.33 percentage points) excludes zero entirely. Where the Day-1 result was directionally suggestive but inconclusive on its own, the Day-7 result is unambiguous: players who saw the gate at level 30 were significantly more likely to still be playing a week later. This confirms the direction the Day-1 data, the power analysis, and the Bayesian posterior all already pointed toward, and removes the residual doubt the Day-1 result left open.
+
+Testing two pre-specified endpoints, Day-1 and Day-7, carries its own multiplicity risk, distinct from the sequential peeking examined in section 6: peeking inflates false positives from checking one endpoint repeatedly over time, while testing two endpoints inflates the chance that at least one of them looks significant by chance, even with a single look at each. Applying a Bonferroni correction for two tests (alpha = 0.025 per test instead of 0.05) still leaves the Day-7 result significant (p = 0.0016), so this confirmation is not an artifact of having tested two metrics.
+
+Section 4 showed the Day-1 test was underpowered for the effect size actually observed there. The same check is worth running on the Day-7 effect size, rather than assuming the significant p-value above implies adequate power.
+
+```{r}
+#| label: power-analysis-day7
+
+p1_day7 <- ret7_summary$rate[ret7_summary$version == "gate_30"]
+p2_day7 <- ret7_summary$rate[ret7_summary$version == "gate_40"]
+effect_h_day7 <- ES.h(p1_day7, p2_day7)
+
+achieved_power_day7 <- pwr.2p.test(h = effect_h_day7, n = actual_n_per_group, sig.level = 0.05)
+```
+
+This effect size corresponds to an estimated power of `r percent(achieved_power_day7$power, accuracy = 0.1)`, well above the 43% achieved for Day-1 (section 4). The Day-7 effect is both larger in absolute terms and, because it is measured against a lower base retention rate, larger still on the arcsine scale power analysis uses, which is why the same sample size that left Day-1 underpowered comfortably powers Day-7.
+
+## Appendices {.unnumbered}
+
+::: {.callout-note collapse="true"}
+## Session Information
+
+The exact R session, package versions, and environment used to produce this report, for reproducibility.
+
+```{r}
+sessionInfo()
+```
+:::
+
+## References {.unnumbered}
+
+::: {#refs}
+:::

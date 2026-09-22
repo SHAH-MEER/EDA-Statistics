@@ -1,0 +1,10 @@
+/* Main document width */
+#quarto-content {
+  max-width: 1400px;
+}
+
+/* Reduce horizontal padding */
+main.content {
+  padding-left: 20px !important;
+  padding-right: 20px !important;
+}
