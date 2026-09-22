@@ -1355,6 +1355,23 @@ above, which affects both methods and means the shortfall is not spread evenly
 across time but concentrated in exactly the crisis windows, 2020 and 2022, when
 capital is most needed.
 
+## Practical Implications
+
+This report's own findings point toward specific fixes, not just problems. A
+Student-t or skew-t return distribution, with a free parameter for tail thickness,
+would capture Section 4's excess kurtosis directly, rather than assuming normality
+outright and hoping the historical method's implicit shape happens to compensate.
+Feeding Section 5's GARCH(1,1) conditional volatility into VaR instead of a static
+252-day rolling window would let the threshold adapt within days of a shock,
+directly targeting the breach-clustering problem Christoffersen's test caught above.
+And because a 252-day window contains only about 2.5 expected exceedances at the 1%
+level, too few to pin down a tail reliably, which is exactly why even historical VaR
+under-covered the tail in Section 7, Extreme Value Theory, fitting a Generalized
+Pareto Distribution to returns beyond a high threshold rather than the whole
+distribution, is the standard tool built for estimating a thin-sample tail. None of
+the three is implemented here; each is simply the next step this report's own
+diagnostics motivate.
+
 ## Appendices {.unnumbered}
 
 ::: {.callout-note collapse="true" title="Session info and full correlation matrix"}
