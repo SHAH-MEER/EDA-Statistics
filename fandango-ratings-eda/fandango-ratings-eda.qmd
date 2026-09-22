@@ -1,0 +1,551 @@
+---
+title: "Behind the Stars: Was Fandango's Rating System Biased?"
+subtitle: "Fandango's displayed ratings against Rotten Tomatoes, Metacritic, and IMDb, 2015"
+jupyter: python3
+format:
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    toc: true
+    number-sections: true
+    embed-resources: true
+    fig-width: 12
+    fig-height: 6
+    css: styles.css
+bibliography: references.bib
+---
+
+```{python}
+#| label: setup
+#| include: false
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+import seaborn as sns
+from scipy import stats
+
+SITE_COLORS = {
+    "RATING": "#2a78d6",
+    "STARS": "#eb6834",
+    "RT_Norm": "#1baf7a",
+    "RTU_Norm": "#eda100",
+    "Meta_Norm": "#e87ba4",
+    "Meta_U_Norm": "#008300",
+    "IMDB_Norm": "#4a3aa7",
+}
+SITE_LABELS = {
+    "STARS": "Fandango (displayed)",
+    "RATING": "Fandango (true)",
+    "RT_Norm": "Rotten Tomatoes (critics)",
+    "RTU_Norm": "Rotten Tomatoes (users)",
+    "Meta_Norm": "Metacritic (critics)",
+    "Meta_U_Norm": "Metacritic (users)",
+    "IMDB_Norm": "IMDb",
+}
+COLOR_HIGHLIGHT = "#e34948"
+
+COLOR_GRID = "#e1e0d9"
+COLOR_MUTED = "#898781"
+COLOR_SECONDARY_INK = "#52514e"
+COLOR_PRIMARY_INK = "#0b0b0b"
+COLOR_SURFACE = "#fcfcfb"
+SEQUENTIAL_RAMP = ["#cde2fb", "#86b6ef", "#3987e5", "#2a78d6", "#1c5cab", "#0d366b"]
+
+
+def set_fandango_theme():
+    sns.set_theme(style="white")
+    plt.rcParams.update({
+        "figure.facecolor": COLOR_SURFACE,
+        "axes.facecolor": COLOR_SURFACE,
+        "savefig.facecolor": COLOR_SURFACE,
+        "axes.edgecolor": COLOR_GRID,
+        "axes.grid": True,
+        "grid.color": COLOR_GRID,
+        "grid.linewidth": 0.6,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.spines.left": False,
+        "axes.spines.bottom": False,
+        "xtick.color": COLOR_MUTED,
+        "ytick.color": COLOR_MUTED,
+        "text.color": COLOR_SECONDARY_INK,
+        "axes.labelcolor": COLOR_SECONDARY_INK,
+        "axes.titlecolor": COLOR_PRIMARY_INK,
+        "axes.titleweight": "bold",
+        "axes.titlesize": 14,
+        "font.size": 11,
+        "legend.frameon": False,
+        "legend.labelcolor": COLOR_SECONDARY_INK,
+    })
+
+
+set_fandango_theme()
+
+
+def style_table(df, formats=None):
+    styler = df.style.hide(axis="index")
+    if formats:
+        styler = styler.format(formats)
+    styler = styler.set_table_styles([
+        {"selector": "th", "props": [
+            ("background-color", COLOR_SURFACE), ("color", COLOR_SECONDARY_INK),
+            ("border-bottom", f"1px solid {COLOR_GRID}"), ("text-align", "right"),
+            ("padding", "6px 10px"),
+        ]},
+        {"selector": "td", "props": [
+            ("border-bottom", f"1px solid {COLOR_GRID}"), ("padding", "6px 10px"),
+            ("color", COLOR_PRIMARY_INK),
+        ]},
+    ]).set_properties(**{"text-align": "right"})
+    return styler
+
+
+def add_title(ax, title, subtitle=None):
+    ax.set_title(title, loc="left", fontsize=14, fontweight="bold", color=COLOR_PRIMARY_INK, pad=26 if subtitle else 10)
+    if subtitle:
+        ax.text(0.0, 1.02, subtitle, transform=ax.transAxes, fontsize=10.5, color=COLOR_SECONDARY_INK, va="bottom")
+
+
+fandango = pd.read_csv("data/fandango_scrape.csv")
+all_sites = pd.read_csv("data/all_sites_scores.csv")
+```
+
+## Executive Summary {.unnumbered}
+
+Fandango's 2015 displayed ratings were systematically inflated above the rating its own votes implied, and above what four other major review platforms scored the same films. Among the 435 Fandango films with at least one vote, the displayed star rating exceeds the true underlying rating for 328 of them (75%) and is never lower; the largest single-film gap is a full star, on *Turbo Kid* (5.0 displayed versus 4.0 true). Extending the comparison to Rotten Tomatoes, Metacritic, and IMDb for the 145 films with coverage on all platforms, Fandango's mean displayed rating is 4.09 stars on a 0-5 scale, roughly 0.9 stars above the 3.16 average of the other five site-and-audience scores normalized to the same scale, a 29% inflation. The pattern is consistent rather than a few outliers dragging an average: Fandango out-scores Rotten Tomatoes' critic score alone on 67% of these films and out-scores every one of the remaining four platforms on at least 86% of them. The starkest example is *Taken 3*, which Fandango displayed at 4.5 stars while Rotten Tomatoes' critics, Metacritic's critics, and Metacritic's users each normalized below 2.5 stars. The inflation is not hidden in Fandango's least-watched titles either: it correlates positively with vote count, running almost twice as large on the more-voted half of the catalog as on the less-voted half. Because Fandango is also the seller of the tickets its rating page encourages, this pattern is consistent with the incentive FiveThirtyEight's original reporting flagged: a moviegoer relying on Fandango's displayed stars alone would consistently see a rosier number than the same film earns everywhere else, and more so for the films Fandango has the most riding on.
+
+## Introduction
+
+If you are deciding whether to see a movie, how much should you trust the rating displayed on the ticket-selling site itself? This is the question FiveThirtyEight raised in its 2015 investigation, *Be Suspicious of Online Movie Ratings, Especially Fandango's* [@hickey2015], after noticing that Fandango's displayed star ratings looked implausibly high compared to the underlying numeric ratings and to other review platforms. Fandango sells movie tickets directly, which gives it a financial incentive that a pure review aggregator, like Rotten Tomatoes or Metacritic, does not have: a higher displayed rating can plausibly drive more ticket sales.
+
+This report follows that investigation using the same data FiveThirtyEight collected. It first checks whether Fandango's own displayed star rating matches the true underlying rating implied by its votes. It then compares Fandango's scores against Rotten Tomatoes, Metacritic, and IMDb, first pairwise for each platform's own critic-versus-user split, and then all together on a common 0-5 scale, to see whether the earlier finding was specific to Fandango's own display logic or reflects Fandango's ratings running high relative to the rest of the market.
+
+## Data
+
+The data comes from FiveThirtyEight's public GitHub repository, pulled directly from Fandango on 2015-08-24 [@fivethirtyeightdata]. Two files are used. The first, `fandango_scrape.csv`, contains every film Fandango displayed a rating for: the film title, the number of stars shown on the page (`STARS`), the actual average rating pulled from the page's HTML (`RATING`), and the number of user votes (`VOTES`) at the time of the pull. The second, `all_sites_scores.csv`, contains the subset of those films that also had a Rotten Tomatoes critic score (`RottenTomatoes`) and user score (`RottenTomatoes_User`), a Metacritic critic score (`Metacritic`) and user score (`Metacritic_User`), an IMDb user score (`IMDB`), and at least 30 Fandango fan reviews, along with the Metacritic and IMDb user vote counts.
+
+```{python}
+#| label: tbl-fandango-describe
+#| tbl-cap: "Fandango scrape summary statistics, all 504 films"
+
+style_table(
+    fandango.describe().reset_index().rename(columns={"index": "statistic"}),
+    formats={"STARS": "{:.2f}", "RATING": "{:.2f}", "VOTES": "{:,.0f}"},
+)
+```
+
+`STARS` and `RATING` are nearly identical on average (3.56 versus 3.38), a first hint that Fandango's displayed rating runs a little above the number it is supposedly built from. `VOTES` is heavily right-skewed: half the films have 18 or fewer votes, while the busiest film has over 34,000. The three numeric columns correlate as expected: `STARS` and `RATING` move together almost perfectly (0.99), while `VOTES` correlates weakly with either (0.16), so popularity and rating are largely independent of each other.
+
+```{python}
+#| label: fig-rating-votes
+#| fig-cap: "Fandango rating versus vote count, all 504 films"
+
+fig, ax = plt.subplots()
+ax.scatter(fandango["RATING"], fandango["VOTES"], s=18, alpha=0.6, color=SITE_COLORS["RATING"], edgecolor="none")
+ax.set_xlabel("Rating")
+ax.set_ylabel("Votes")
+add_title(ax, "Popularity Is Not Concentrated at the High End", "Fandango rating vs. vote count, all 504 films")
+fig.tight_layout()
+```
+
+The film titles follow a consistent `Title (Year)` format, which makes the release year straightforward to pull out for a quick sanity check on the data's coverage.
+
+```{python}
+#| label: fig-year-counts
+#| fig-cap: "Film count by release year"
+
+fandango["YEAR"] = fandango["FILM"].apply(lambda title: title.split("(")[-1].replace(")", ""))
+year_counts = fandango["YEAR"].value_counts().sort_index()
+
+fig, ax = plt.subplots(figsize=(8, 4.5))
+ax.bar(year_counts.index, year_counts.values, color=SITE_COLORS["RATING"], width=0.6)
+ax.set_xlabel(None)
+ax.set_ylabel("Number of films")
+add_title(ax, "Almost All Films Are From 2015", "Fandango film count by release year")
+fig.tight_layout()
+```
+
+478 of the 504 films (95%) are 2015 releases, consistent with the scrape being a snapshot of what was showing or recently released at the time. A handful of older titles (23 from 2014, and three isolated films from 2012, 1964, and 2016) round out the rest and do not meaningfully affect the analysis below.
+
+```{python}
+#| label: tbl-top-votes
+#| tbl-cap: "10 most-voted films on Fandango"
+
+style_table(
+    fandango.nlargest(10, "VOTES")[["FILM", "STARS", "RATING", "VOTES"]],
+    formats={"STARS": "{:.1f}", "RATING": "{:.1f}", "VOTES": "{:,.0f}"},
+)
+```
+
+69 of the 504 films have zero votes, meaning Fandango is displaying a rating with no underlying user data behind it at all. Those films are excluded from the rest of the analysis, leaving 435 films with at least one vote, referred to below as the reviewed films.
+
+```{python}
+#| label: fan-reviewed
+#| echo: false
+
+fan_reviewed = fandango[fandango["VOTES"] > 0].copy()
+```
+
+## Fandango's Displayed Stars vs. True Rating
+
+As FiveThirtyEight's reporting noted, the star rating a site displays is not always the same number as the underlying average rating: HTML rendering and rounding choices can introduce a gap between the two. The chart below compares the distribution of Fandango's displayed `STARS` against the distribution of the true `RATING`, for the 435 reviewed films.
+
+```{python}
+#| label: fig-stars-vs-rating-kde
+#| fig-cap: "Distribution of Fandango's displayed stars vs. true rating, 435 reviewed films"
+
+fig, ax = plt.subplots()
+sns.kdeplot(data=fan_reviewed, x="RATING", clip=(0, 5), fill=True, color=SITE_COLORS["RATING"], label="True rating", ax=ax)
+sns.kdeplot(data=fan_reviewed, x="STARS", clip=(0, 5), fill=True, color=SITE_COLORS["STARS"], label="Displayed stars", ax=ax)
+ax.set_xlabel("Rating (0-5)")
+ax.set_ylabel("Density")
+ax.legend(loc="upper left")
+add_title(ax, "Displayed Stars Skew Higher Than the True Rating", "KDE of Fandango's displayed stars vs. true rating")
+fig.tight_layout()
+```
+
+The displayed-stars curve sits visibly to the right of the true-rating curve, concentrated toward 4 and 4.5 stars, while the true rating spreads more evenly across the 3 to 4.5 range. Quantifying this directly, as the displayed stars minus the true rating:
+
+```{python}
+#| label: tbl-stars-diff
+#| tbl-cap: "Fandango displayed stars minus true rating, summary statistics"
+
+fan_reviewed["STARS_DIFF"] = (fan_reviewed["STARS"] - fan_reviewed["RATING"]).round(2)
+
+style_table(
+    fan_reviewed["STARS_DIFF"].describe().reset_index().rename(columns={"index": "statistic", "STARS_DIFF": "value"}),
+    formats={"value": "{:.3f}"},
+)
+```
+
+The gap is never negative: Fandango's displayed rating is never lower than the true rating for any of the 435 reviewed films, and it is strictly higher for 328 of them (75%), with the rest displaying exactly the true rating. The largest single-film gap is a full star:
+
+```{python}
+#| label: tbl-stars-diff-outlier
+#| tbl-cap: "Largest gap between displayed stars and true rating"
+
+style_table(
+    fan_reviewed[fan_reviewed["STARS_DIFF"] == fan_reviewed["STARS_DIFF"].max()][["FILM", "STARS", "RATING", "STARS_DIFF"]],
+    formats={"STARS": "{:.1f}", "RATING": "{:.1f}", "STARS_DIFF": "{:.2f}"},
+)
+```
+
+*Turbo Kid* displayed 5.0 stars against a true rating of 4.0, the single largest discrepancy found on Fandango's own site, before any comparison to other platforms.
+
+## Fandango vs. Other Rating Platforms
+
+This section sets Fandango aside and looks at how the other three platforms compare internally, each of which reports separate critic and user scores.
+
+```{python}
+#| label: sites-merge
+#| echo: false
+
+df = pd.merge(fandango, all_sites, on="FILM", how="inner")
+```
+
+### Rotten Tomatoes
+
+Rotten Tomatoes reports a critics' Tomatometer score and a separate audience score, both on a 0-100 scale.
+
+```{python}
+#| label: fig-rt-scatter
+#| fig-cap: "Rotten Tomatoes critics score vs. user score, 146 films"
+
+fig, ax = plt.subplots()
+ax.scatter(all_sites["RottenTomatoes"], all_sites["RottenTomatoes_User"], s=18, alpha=0.6, color=SITE_COLORS["RT_Norm"], edgecolor="none")
+ax.set_xlim(0, 100)
+ax.set_ylim(0, 100)
+ax.set_xlabel("Rotten Tomatoes critics score")
+ax.set_ylabel("Rotten Tomatoes user score")
+add_title(ax, "Critics and Audiences Broadly Agree, With Scatter", "Rotten Tomatoes critics score vs. user score")
+fig.tight_layout()
+```
+
+```{python}
+#| label: rt-diff
+#| echo: false
+
+all_sites["Rotten_Diff"] = all_sites["RottenTomatoes"] - all_sites["RottenTomatoes_User"]
+```
+
+Quantifying the spread, the critics' score minus the user score averages `{python} f"{all_sites['Rotten_Diff'].mean():.1f}"` points (near zero, so no systematic critic-versus-audience bias on average), but the *absolute* difference averages `{python} f"{all_sites['Rotten_Diff'].abs().mean():.1f}"` points on the 0-100 scale, meaning individual films frequently see real disagreement even though it washes out in the average.
+
+```{python}
+#| label: fig-rt-diff-hist
+#| fig-cap: "Rotten Tomatoes critics score minus user score, signed and absolute"
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+sns.histplot(data=all_sites, x="Rotten_Diff", kde=True, bins=25, color=SITE_COLORS["RT_Norm"], ax=axes[0])
+axes[0].set_xlabel("Critics minus user score")
+axes[0].set_ylabel("Number of films")
+sns.histplot(x=all_sites["Rotten_Diff"].abs(), kde=True, bins=25, color=SITE_COLORS["RT_Norm"], ax=axes[1])
+axes[1].set_xlabel("Absolute difference")
+axes[1].set_ylabel(None)
+add_title(axes[0], "Signed Difference Centers Near Zero...", "Rotten Tomatoes critics minus user score")
+add_title(axes[1], "...But Absolute Difference Does Not", "Rotten Tomatoes |critics minus user score|")
+fig.tight_layout()
+```
+
+```{python}
+#| label: tbl-rt-extremes
+#| tbl-cap: "Largest critic-audience gaps on Rotten Tomatoes, both directions"
+
+rt_users_love = all_sites.nsmallest(5, "Rotten_Diff")[["FILM", "Rotten_Diff"]].assign(direction="Users rated higher")
+rt_critics_love = all_sites.nlargest(5, "Rotten_Diff")[["FILM", "Rotten_Diff"]].assign(direction="Critics rated higher")
+style_table(pd.concat([rt_users_love, rt_critics_love]), formats={"Rotten_Diff": "{:+.0f}"})
+```
+
+*Do You Believe?* shows the largest gap in either direction: users rated it 66 points higher than critics did. *Mr. Turner* shows the opposite pattern most strongly, with critics rating it 42 points above users.
+
+### Metacritic
+
+Metacritic also splits its rating into a critic score (0-100) and a separate user score (0-10).
+
+```{python}
+#| label: fig-meta-scatter
+#| fig-cap: "Metacritic critic score vs. user score, 146 films"
+
+fig, ax = plt.subplots()
+ax.scatter(all_sites["Metacritic"], all_sites["Metacritic_User"], s=18, alpha=0.6, color=SITE_COLORS["Meta_Norm"], edgecolor="none")
+ax.set_xlim(0, 100)
+ax.set_ylim(0, 10)
+ax.set_xlabel("Metacritic critic score")
+ax.set_ylabel("Metacritic user score")
+add_title(ax, "Metacritic Critics and Users Show a Looser Relationship", "Metacritic critic score vs. user score")
+fig.tight_layout()
+```
+
+The relationship is visibly noisier than Rotten Tomatoes' critics-versus-users scatter, with more films where the critic score and user score diverge sharply on Metacritic's own two scales.
+
+### IMDb and Vote Counts
+
+Both Metacritic and IMDb report how many user votes back their score, which makes it possible to check whether the two platforms' audiences are drawing from the same pool of viewers.
+
+```{python}
+#| label: fig-vote-count-scatter
+#| fig-cap: "Metacritic user vote count vs. IMDb user vote count, 146 films"
+
+fig, ax = plt.subplots()
+ax.scatter(all_sites["Metacritic_user_vote_count"], all_sites["IMDB_user_vote_count"], s=18, alpha=0.6, color=SITE_COLORS["IMDB_Norm"], edgecolor="none")
+ax.set_xlabel("Metacritic user vote count")
+ax.set_ylabel("IMDb user vote count")
+add_title(ax, "IMDb Draws a Far Larger Audience Than Metacritic", "Metacritic vs. IMDb user vote count")
+fig.tight_layout()
+```
+
+```{python}
+#| label: tbl-vote-outliers
+#| tbl-cap: "Highest vote count on each platform"
+
+style_table(
+    pd.concat([
+        all_sites.nlargest(1, "IMDB_user_vote_count")[["FILM", "IMDB_user_vote_count", "Metacritic_user_vote_count"]],
+        all_sites.nlargest(1, "Metacritic_user_vote_count")[["FILM", "IMDB_user_vote_count", "Metacritic_user_vote_count"]],
+    ]),
+    formats={"IMDB_user_vote_count": "{:,.0f}", "Metacritic_user_vote_count": "{:,.0f}"},
+)
+```
+
+*The Imitation Game* has the most IMDb votes of any film in the dataset (334,164), but only 566 Metacritic votes, a difference of nearly three orders of magnitude that shows IMDb's much larger general audience relative to Metacritic's smaller, more curated user base. *Mad Max: Fury Road* draws the most Metacritic votes (2,375) while also ranking third by IMDb votes, the one film with substantial engagement on both platforms at once.
+
+## Fandango Against All Platforms: The Central Comparison
+
+The previous sections established two things separately: Fandango's own displayed stars run above its true rating, and the other three platforms show normal critic-versus-user disagreement without a consistent direction. This section brings all platforms onto one common scale to test the question that motivated the original investigation directly: does Fandango's displayed rating run high not just against its own true rating, but against the rest of the market.
+
+Rotten Tomatoes and Metacritic report on a 0-100 scale, Metacritic's user score and IMDb report on a 0-10 scale, and Fandango displays 0-5 stars. To compare them directly, every score is rescaled to Fandango's 0-5 range, preserving each score's relative position on its own scale.
+
+```{python}
+#| label: normalize-scores
+#| echo: false
+
+df["RT_Norm"] = np.round(df["RottenTomatoes"] / 20, 1)
+df["RTU_Norm"] = np.round(df["RottenTomatoes_User"] / 20, 1)
+df["Meta_Norm"] = np.round(df["Metacritic"] / 20, 1)
+df["Meta_U_Norm"] = np.round(df["Metacritic_User"] / 2, 1)
+df["IMDB_Norm"] = np.round(df["IMDB"] / 2, 1)
+
+norm_scores = df[["STARS", "RATING", "RT_Norm", "RTU_Norm", "Meta_Norm", "Meta_U_Norm", "IMDB_Norm"]]
+```
+
+145 of the 146 films in `all_sites_scores.csv` also appear in the Fandango file under an identical title string; one, *Mission: Impossible – Rogue Nation*, is excluded because the two files encode its title with different dash characters and so do not merge on an exact match. This affects one film out of 146 and does not change the pattern below.
+
+```{python}
+#| label: tbl-norm-means
+#| tbl-cap: "Mean normalized score by platform, 0-5 scale, 145 films"
+
+norm_means = norm_scores.mean().reset_index()
+norm_means.columns = ["column", "mean_score"]
+norm_means["platform"] = norm_means["column"].map(SITE_LABELS)
+style_table(norm_means[["platform", "mean_score"]], formats={"mean_score": "{:.2f}"})
+```
+
+Fandango's displayed `STARS` has the highest mean of any column, 4.09, ahead of its own true `RATING` (3.84) and well ahead of every other platform, which range from 2.94 (Metacritic critics) to 3.37 (IMDb).
+
+Averages can be pulled by a handful of outliers, so it is worth checking whether Fandango's lead holds up film by film, not just on average. For each other platform, the table below counts how often Fandango's displayed stars actually beat that platform's normalized score for the same film.
+
+```{python}
+#| label: tbl-win-rate
+#| tbl-cap: "Share of films where Fandango's displayed stars exceed each platform's normalized score"
+
+other_cols = ["RT_Norm", "RTU_Norm", "Meta_Norm", "Meta_U_Norm", "IMDB_Norm"]
+win_rate = pd.DataFrame({
+    "platform": [SITE_LABELS[c] for c in other_cols],
+    "% of films": [(df["STARS"] > df[c]).mean() * 100 for c in other_cols],
+})
+style_table(win_rate, formats={"% of films": "{:.0f}%"})
+```
+
+```{python}
+#| label: other-platform-gap
+#| echo: false
+
+other_platforms_mean = norm_scores[other_cols].mean().mean()
+stars_gap = df["STARS"].mean() - other_platforms_mean
+pct_inflation = stars_gap / other_platforms_mean * 100
+
+rt_win_rate = win_rate.loc[win_rate["platform"] == "Rotten Tomatoes (critics)", "% of films"].iloc[0]
+other_win_rate_min = win_rate.loc[win_rate["platform"] != "Rotten Tomatoes (critics)", "% of films"].min()
+```
+
+Fandango's displayed stars beat Rotten Tomatoes' critic score alone on `{python} f"{rt_win_rate:.0f}"`% of films, the smallest gap of the five, and beat every one of the remaining four platforms on at least `{python} f"{other_win_rate_min:.0f}"`% of films. This is not a small-average, large-variance effect: Fandango's displayed rating is higher than the comparison platform on a clear majority of films in every single case. The chart below shows the full distribution behind those means, not just the averages.
+
+```{python}
+#| label: fig-normalized-kde
+#| fig-cap: "Distribution of normalized scores across all platforms, 145 films"
+
+fig, ax = plt.subplots(figsize=(13, 6))
+for col in norm_scores.columns:
+    sns.kdeplot(data=norm_scores, x=col, clip=(0, 5), fill=True, alpha=0.35, color=SITE_COLORS[col], label=SITE_LABELS[col], ax=ax)
+ax.set_xlabel("Normalized score (0-5)")
+ax.set_ylabel("Density")
+ax.legend(loc="upper left", ncol=2)
+add_title(ax, "Fandango's Displayed Stars Sit Apart From Every Other Platform", "KDE of normalized scores, all 7 columns")
+fig.tight_layout()
+```
+
+Fandango's displayed stars are the only curve tightly concentrated near the top of the scale; every other platform, including Fandango's own true rating, shows a wider, more left-of-center spread. Rotten Tomatoes' critics score has the most even distribution of the group, making it the most useful single point of contrast against Fandango's displayed stars.
+
+```{python}
+#| label: fig-rt-vs-stars-kde
+#| fig-cap: "Rotten Tomatoes critics score vs. Fandango displayed stars"
+
+fig, ax = plt.subplots()
+sns.kdeplot(data=norm_scores, x="RT_Norm", clip=(0, 5), fill=True, color=SITE_COLORS["RT_Norm"], label=SITE_LABELS["RT_Norm"], ax=ax)
+sns.kdeplot(data=norm_scores, x="STARS", clip=(0, 5), fill=True, color=SITE_COLORS["STARS"], label=SITE_LABELS["STARS"], ax=ax)
+ax.set_xlabel("Normalized score (0-5)")
+ax.set_ylabel("Density")
+ax.legend(loc="upper left")
+add_title(ax, "The Widest Gap Is Against Rotten Tomatoes' Critics", "Rotten Tomatoes critics score vs. Fandango displayed stars")
+fig.tight_layout()
+```
+
+```{python}
+#| label: fig-normalized-hist
+#| fig-cap: "Histogram of normalized scores across all platforms, 145 films"
+
+fig, ax = plt.subplots(figsize=(13, 6))
+for col in norm_scores.columns:
+    sns.histplot(data=norm_scores, x=col, bins=20, color=SITE_COLORS[col], label=SITE_LABELS[col], alpha=0.45, element="step", ax=ax)
+ax.set_xlabel("Normalized score (0-5)")
+ax.set_ylabel("Number of films")
+ax.legend(loc="upper left", ncol=2)
+add_title(ax, "Fandango's Stars Cluster High; Every Other Platform Spreads Out", "Histogram of normalized scores, all 7 columns")
+fig.tight_layout()
+```
+
+A clustermap groups films by how similarly they score across all seven columns at once, which surfaces whether high and low scores travel together across platforms.
+
+```{python}
+#| label: fig-clustermap
+#| fig-cap: "Clustermap of normalized scores across all platforms and films"
+
+blue_cmap = LinearSegmentedColormap.from_list("fandango_blue", SEQUENTIAL_RAMP)
+cg = sns.clustermap(
+    norm_scores, cmap=blue_cmap, col_cluster=False, figsize=(10, 12),
+    cbar_kws={"label": "Normalized score (0-5)"}, xticklabels=[SITE_LABELS[c] for c in norm_scores.columns],
+    yticklabels=False,
+)
+cg.ax_heatmap.set_ylabel("Films")
+cg.fig.suptitle("Low- and High-Scoring Films Cluster Consistently Across Platforms", x=0.02, y=1.01, ha="left", fontsize=14, fontweight="bold", color=COLOR_PRIMARY_INK)
+plt.show()
+```
+
+Rows sort into visibly darker (low-scoring) and lighter (high-scoring) bands that hold together across most columns, meaning a film that scores low on one platform tends to score low everywhere else too, with Fandango's displayed `STARS` column as the clearest exception to that pattern.
+
+```{python}
+#| label: tbl-worst-films
+#| tbl-cap: "10 lowest-rated films by Rotten Tomatoes critics, all normalized scores"
+
+worst_films = df.nsmallest(10, "RT_Norm")[["FILM", "STARS", "RATING", "RT_Norm", "RTU_Norm", "Meta_Norm", "Meta_U_Norm", "IMDB_Norm"]]
+style_table(worst_films, formats={c: "{:.1f}" for c in worst_films.columns if c != "FILM"})
+```
+
+```{python}
+#| label: fig-worst-films-kde
+#| fig-cap: "Distribution of normalized scores for the 10 lowest-rated films"
+
+worst_scores = df.nsmallest(10, "RT_Norm")[list(SITE_COLORS.keys())]
+
+fig, ax = plt.subplots(figsize=(13, 6))
+for col in worst_scores.columns:
+    sns.kdeplot(data=worst_scores, x=col, clip=(0, 5), fill=True, alpha=0.35, color=SITE_COLORS[col], label=SITE_LABELS[col], ax=ax)
+ax.set_xlabel("Normalized score (0-5)")
+ax.set_ylabel("Density")
+ax.legend(loc="upper left", ncol=2)
+add_title(ax, "Fandango Rates the Worst Films Best, Every Time", "Normalized scores, 10 lowest-rated films by Rotten Tomatoes critics")
+fig.tight_layout()
+```
+
+### Is the Inflation Concentrated in Obscure Films?
+
+One remaining question is whether this inflation is spread evenly across Fandango's catalog, or concentrated in lower-profile films where a padded rating is less likely to be noticed or challenged. `VOTES`, already established in the Data section as heavily right-skewed, gives a proxy for how much attention a film was getting at the time. The chart below plots each film's inflation, Fandango's displayed stars minus the mean of the other five platform-and-audience scores, against its vote count on a log scale.
+
+```{python}
+#| label: fig-inflation-votes
+#| fig-cap: "Fandango's inflation vs. film popularity (vote count, log scale)"
+
+df["other_platforms_avg"] = df[other_cols].mean(axis=1)
+df["inflation"] = df["STARS"] - df["other_platforms_avg"]
+
+log_votes = np.log1p(df["VOTES"])
+inflation_r, inflation_p = stats.pearsonr(log_votes, df["inflation"])
+
+fig, ax = plt.subplots()
+ax.scatter(df["VOTES"], df["inflation"], s=22, alpha=0.6, color=SITE_COLORS["STARS"], edgecolor="none")
+ax.set_xscale("log")
+ax.axhline(0, color=COLOR_MUTED, linewidth=0.8, linestyle=":")
+ax.set_xlabel("Votes (log scale)")
+ax.set_ylabel("Inflation (STARS minus other-platform average)")
+add_title(ax, "Inflation Is Larger, Not Smaller, on Fandango's Busiest Films", "Per-film inflation vs. vote count")
+fig.tight_layout()
+```
+
+The relationship runs opposite to what a "padding goes unnoticed in the long tail" story would predict: inflation correlates positively with vote count on a log scale (r = `{python} f"{inflation_r:.2f}"`, p `{python} "< 0.001" if inflation_p < 0.001 else f"= {inflation_p:.3f}"`). Splitting the 145 films at the median vote count makes the same point in plainer terms: the less-voted half averages `{python} f"{df.loc[df['VOTES'] <= df['VOTES'].median(), 'inflation'].mean():.2f}"` stars of inflation, versus `{python} f"{df.loc[df['VOTES'] > df['VOTES'].median(), 'inflation'].mean():.2f}"` stars for the more-voted half, almost double. Fandango's displayed rating is not quietly padded on films few people are watching; the gap is, if anything, wider on the films with the most riding on them commercially.
+
+```{python}
+#| label: tbl-taken3
+#| tbl-cap: "Taken 3: Fandango's displayed rating against every other platform"
+
+style_table(
+    df.loc[df["FILM"].str.contains("Taken 3"), ["FILM", "STARS", "RATING", "RT_Norm", "RTU_Norm", "Meta_Norm", "Meta_U_Norm", "IMDB_Norm"]],
+    formats={c: "{:.1f}" for c in ["STARS", "RATING", "RT_Norm", "RTU_Norm", "Meta_Norm", "Meta_U_Norm", "IMDB_Norm"]},
+)
+```
+
+**Final thoughts: Wow! Fandango is showing around 3-4 star ratings for films that are clearly bad! Notice the biggest offender, [Taken 3!](https://www.youtube.com/watch?v=tJrfImRCHJ0). Fandango is displaying 4.5 stars on their site for a film with an [average rating of 1.86](https://en.wikipedia.org/wiki/Taken_3#Critical_response) across the other platforms!**
+
+![*Taken 3* (2015): Fandango's most emblematic case of displayed-rating inflation in this dataset.](images/taken3-poster.jpg){#fig-taken3-poster fig-alt="Taken 3 movie poster" width="220"}
+
+## Appendices {.unnumbered}
+
+::: {.callout-note collapse="true" title="Reproducibility and data notes"}
+-   Data pulled by FiveThirtyEight on 2015-08-24; see `README.md` for the source repository and column definitions.
+-   `fandango_scrape.csv`: 504 films, no missing values.
+-   `all_sites_scores.csv`: 146 films, no missing values.
+-   The Fandango-to-all-sites merge matches 145 of 146 films by exact title string; *Mission: Impossible – Rogue Nation* is dropped from the merged analysis only, due to a dash-character mismatch between the two files' title columns.
+-   Normalization divides Rotten Tomatoes' and Metacritic's critic scores (0-100) by 20, and Metacritic's and IMDb's user scores (0-10) by 2, so every column lands on Fandango's native 0-5 scale.
+:::
+
+## References {.unnumbered}
