@@ -415,7 +415,7 @@ Fandango's displayed stars beat Rotten Tomatoes' critic score alone on `{python}
 #| label: fig-normalized-kde
 #| fig-cap: "Distribution of normalized scores across all platforms, 145 films"
 
-fig, ax = plt.subplots(figsize=(13, 6))
+fig, ax = plt.subplots(figsize=(12, 6))
 for col in norm_scores.columns:
     sns.kdeplot(data=norm_scores, x=col, clip=(0, 5), fill=True, alpha=0.35, color=SITE_COLORS[col], label=SITE_LABELS[col], ax=ax)
 ax.set_xlabel("Normalized score (0-5)")
@@ -445,7 +445,7 @@ fig.tight_layout()
 #| label: fig-normalized-hist
 #| fig-cap: "Histogram of normalized scores across all platforms, 145 films"
 
-fig, ax = plt.subplots(figsize=(13, 6))
+fig, ax = plt.subplots(figsize=(12, 6))
 for col in norm_scores.columns:
     sns.histplot(data=norm_scores, x=col, bins=20, color=SITE_COLORS[col], label=SITE_LABELS[col], alpha=0.45, element="step", ax=ax)
 ax.set_xlabel("Normalized score (0-5)")
@@ -488,7 +488,7 @@ style_table(worst_films, formats={c: "{:.1f}" for c in worst_films.columns if c 
 
 worst_scores = df.nsmallest(10, "RT_Norm")[list(SITE_COLORS.keys())]
 
-fig, ax = plt.subplots(figsize=(13, 6))
+fig, ax = plt.subplots(figsize=(12, 6))
 for col in worst_scores.columns:
     sns.kdeplot(data=worst_scores, x=col, clip=(0, 5), fill=True, alpha=0.35, color=SITE_COLORS[col], label=SITE_LABELS[col], ax=ax)
 ax.set_xlabel("Normalized score (0-5)")

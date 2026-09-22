@@ -8,3 +8,12 @@ main.content {
   padding-left: 20px !important;
   padding-right: 20px !important;
 }
+
+/* Responsive images: figures embed with fixed pixel dimensions, so without
+   this they force horizontal scroll on any viewport narrower than the
+   figure's native width */
+.quarto-figure img,
+.cell-output-display img {
+  max-width: 100%;
+  height: auto;
+}
