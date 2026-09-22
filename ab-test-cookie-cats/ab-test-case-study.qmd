@@ -22,19 +22,102 @@ library(pwr)
 library(gt)
 library(scales)
 
-theme_set(
-  theme_minimal(base_size = 12) +
+color_gate30 <- "#2a78d6"
+color_gate40 <- "#eb6834"
+color_sequential <- "#2a78d6"
+color_grid <- "#e1e0d9"
+color_muted <- "#898781"
+color_secondary_ink <- "#52514e"
+color_primary_ink <- "#0b0b0b"
+color_surface <- "#fcfcfb"
+
+gate_colors <- c(gate_30 = color_gate30, gate_40 = color_gate40)
+
+scale_fill_gate <- function(...) scale_fill_manual(values = gate_colors, ...)
+scale_color_gate <- function(...) scale_color_manual(values = gate_colors, ...)
+
+theme_cookie_cats <- function(base_size = 12) {
+  theme_minimal(base_size = base_size) +
     theme(
-      plot.title = element_text(face = "bold"),
-      panel.grid.minor = element_blank()
+      plot.background = element_rect(fill = color_surface, color = NA),
+      panel.background = element_rect(fill = color_surface, color = NA),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = color_grid, linewidth = 0.3),
+      axis.text = element_text(color = color_muted),
+      axis.title = element_text(color = color_secondary_ink),
+      plot.title = element_text(color = color_primary_ink, face = "bold", size = rel(1.1)),
+      plot.subtitle = element_text(color = color_secondary_ink),
+      plot.caption = element_text(color = color_muted, size = rel(0.8)),
+      legend.position = "top",
+      legend.title = element_blank(),
+      legend.text = element_text(color = color_secondary_ink)
     )
-)
+}
+
+theme_set(theme_cookie_cats())
 
 cookie_cats <- read_csv("data/cookie_cats.csv", show_col_types = FALSE)
 ```
 
 ## Introduction
 
-Cookie Cats is a mobile puzzle game in which players progress through numbered levels and periodically encounter a gate that pauses progress until a timer expires or the player pays to skip it. The gate was originally placed at level 30. In this experiment it was moved to level 40 for a randomly assigned half of players, while the remaining half kept the level 30 gate.
+Cookie Cats is a mobile puzzle game developed by Tactile Entertainment in the connect-three genre, where players clear boards of coloured pieces to earn stars and progress through a long sequence of numbered levels. Like most games in this genre, its core loop pairs short, replayable levels with a slow drip of new content, and its business model depends on players returning day after day rather than on a single upfront purchase.
+
+A common mechanic in this genre is the level gate: at a specific level, progress is paused and the player must either wait for a timer to expire, ask friends for help, or make an in-app purchase to continue immediately. Gates serve two purposes at once. They create a natural pause point that can prompt social sharing or purchases, and they space out how quickly players consume content, extending how long the game holds each player's attention. Placed too early, a gate can push players to quit before they are invested in the game. Placed too late, it may fail to create enough of a pause to be useful at all. Where to place it is therefore an empirical question, not something that can be reasoned out from first principles alone.
+
+Cookie Cats originally placed its first gate at level 30. In this experiment, the gate was moved to level 40 for a randomly assigned half of new players, while the remaining half kept the level 30 gate, to test whether delaying the gate changed how many players kept playing the game.
 
 This report evaluates the effect of that change on player retention and addresses five questions in sequence: whether retention actually changed, whether the experiment collected enough data to trust that result, how a frequentist and a Bayesian analysis of the same data compare, how much the false-positive rate would have inflated had the test been monitored and stopped early, and what the 7-day retention data confirms about the 1-day result.
+
+## Data
+
+The dataset covers 90,189 players who installed Cookie Cats and were randomly assigned to one of the two gate positions [@kaggle_cookiecats]. Before drawing any conclusions from it, it is worth confirming that the random assignment produced two comparably sized groups, that the data is complete, and that player behaviour looks the way it should for a mobile game of this kind.
+
+```{r}
+#| label: group-counts
+
+group_counts <- cookie_cats |>
+  count(version, name = "players")
+
+group_counts |>
+  gt() |>
+  cols_label(version = "Group", players = "Players") |>
+  fmt_number(columns = players, decimals = 0) |>
+  tab_header(title = "Players per group")
+```
+
+The two groups are close to evenly split, consistent with a working randomisation process.
+
+A quick missingness check confirms whether any column has gaps that would need to be handled before analysis.
+
+```{r}
+#| label: missingness-check
+
+missing_counts <- colSums(is.na(cookie_cats))
+missing_counts
+```
+
+None of the columns have missing values, so no imputation or row removal is needed before proceeding.
+
+Player behaviour within the game is heavily right-skewed: most players stop playing within a handful of rounds, while a small number play thousands of rounds. Because a meaningful share of players finish with zero rounds recorded, the chart below uses a pseudo-log transform rather than a standard log scale, which would otherwise drop those players from the plot entirely.
+
+```{r}
+#| label: fig-gamerounds-dist
+#| fig-cap: "Distribution of game rounds played, pseudo-log scale"
+
+cookie_cats |>
+  ggplot(aes(x = sum_gamerounds)) +
+  geom_histogram(bins = 50, fill = color_sequential) +
+  scale_x_continuous(
+    trans = scales::pseudo_log_trans(base = 10),
+    breaks = c(0, 10, 100, 1000, 10000, 50000),
+    labels = comma
+  ) +
+  labs(
+    x = "Game rounds played (pseudo-log scale)",
+    y = "Number of players",
+    title = "Most players churn within a few rounds; a long tail plays thousands"
+  )
+```
+
+This long tail is expected for a free-to-play mobile game and is not a data quality issue. A single extreme outlier, one player with just under 50,000 recorded rounds, sits far beyond the rest of the distribution but is retained in the analysis, since the retention metrics used in the sections that follow depend only on whether a player returned, not on how many rounds they played.
